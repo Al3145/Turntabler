@@ -8,9 +8,9 @@ bl_info = {
     "category": "Render",
 }
 
-
 import bpy
 import os
+import glob
 from bpy.props import (
     EnumProperty,
     FloatProperty,
@@ -22,8 +22,8 @@ from bpy.props import (
 import math
 
 
-def update_hdri_list(self, context):
-    """Update the list of HDRI files when the directory changes."""
+def get_hdri_files(self, context):
+    """Dynamically populate the list of HDRI files from the selected directory."""
     scn = context.scene
     settings = scn.preview_render_settings
 
@@ -31,16 +31,18 @@ def update_hdri_list(self, context):
     items = []
 
     if os.path.isdir(hdri_dir):
-        files = [f for f in os.listdir(hdri_dir) if f.lower().endswith(('.hdr', '.exr'))]
-        for idx, file in enumerate(files):
-            items.append((file, file, "", idx))
+        # Use glob to find .hdr and .exr files
+        hdri_paths = glob.glob(os.path.join(hdri_dir, '*.hdr')) + glob.glob(os.path.join(hdri_dir, '*.exr'))
+        for idx, hdri_path in enumerate(hdri_paths):
+            hdri_name = os.path.basename(hdri_path)
+            items.append((hdri_path, hdri_name, "", idx))
     else:
         items.append(('NONE', 'No HDRIs Found', '', 0))
 
-    settings.hdri_files = items
+    if not items:
+        items.append(('NONE', 'No HDRIs Found', '', 0))
 
-    if settings.hdri_file not in [item[0] for item in items]:
-        settings.hdri_file = items[0][0] if items else 'NONE'
+    return items
 
 
 class PreviewRenderSettings(bpy.types.PropertyGroup):
@@ -156,17 +158,11 @@ class PreviewRenderSettings(bpy.types.PropertyGroup):
         name="HDRI Directory",
         default="",
         subtype='DIR_PATH',
-        update=update_hdri_list,
     )
 
-    hdri_files: EnumProperty(
+    hdri_file: EnumProperty(
         name="HDRI File",
-        items=[],
-    )
-
-    hdri_file: StringProperty(
-        name="Selected HDRI",
-        default="",
+        items=get_hdri_files,
     )
 
 
@@ -193,7 +189,7 @@ class PREVIEWRENDER_PT_panel(bpy.types.Panel):
 
         layout.label(text="HDRI Settings:")
         layout.prop(settings, "hdri_directory")
-        layout.prop(settings, "hdri_file", text="HDRI", expand=True)
+        layout.prop(settings, "hdri_file")
 
         layout.prop(settings, "output_path")
         layout.prop(settings, "file_format")
@@ -269,15 +265,17 @@ class PREVIEWRENDER_OT_start(bpy.types.Operator):
                     for slot in obj.material_slots:
                         slot.material = settings.override_material
 
-        if settings.render_engine == 'BLENDER_WORKBENCH':
 
-            for area in context.screen.areas:
-                if area.type == 'VIEW_3D':
-                    shading = area.spaces.active.shading
-                    if settings.wireframe_toggle:
-                        shading.type = 'WIREFRAME'
-                    else:
-                        shading.type = 'SOLID'
+        if settings.wireframe_toggle:
+            for obj in selected_objects:
+                obj.display_type = 'WIRE'
+        else:
+            for obj in selected_objects:
+                obj.display_type = 'TEXTURED'
+
+
+        if settings.render_engine == 'BLENDER_WORKBENCH':
+            pass
 
         elif settings.render_engine in {'BLENDER_EEVEE', 'CYCLES'}:
             self.setup_hdri_world(context, settings)
@@ -296,14 +294,11 @@ class PREVIEWRENDER_OT_start(bpy.types.Operator):
         return {'FINISHED'}
 
     def setup_hdri_world(self, context, settings):
-        hdri_dir = bpy.path.abspath(settings.hdri_directory)
-        hdri_file = settings.hdri_file
+        hdri_path = settings.hdri_file
 
-        if not hdri_file or not hdri_dir:
+        if not hdri_path or hdri_path == 'NONE':
             self.report({'WARNING'}, "No HDRI file selected.")
             return
-
-        hdri_path = os.path.join(hdri_dir, hdri_file)
 
         if not os.path.isfile(hdri_path):
             self.report({'ERROR'}, f"HDRI file not found: {hdri_path}")
@@ -320,9 +315,7 @@ class PREVIEWRENDER_OT_start(bpy.types.Operator):
         nodes = world.node_tree.nodes
         links = world.node_tree.links
 
-
         nodes.clear()
-
 
         tex_coord_node = nodes.new(type='ShaderNodeTexCoord')
         mapping_node = nodes.new(type='ShaderNodeMapping')
@@ -413,14 +406,12 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.preview_render_settings = PointerProperty(type=PreviewRenderSettings)
-    bpy.app.handlers.depsgraph_update_post.append(update_hdri_list)
 
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.preview_render_settings
-    bpy.app.handlers.depsgraph_update_post.remove(update_hdri_list)
 
 
 if __name__ == "__main__":
